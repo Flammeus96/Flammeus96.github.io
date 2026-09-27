@@ -1,1 +1,501 @@
-Hello world
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Seasons</title>
+<meta name="description" content="A tree that slowly turns through the seasons.">
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #9fc3dc;
+    font-family: Georgia, "Times New Roman", serif;
+  }
+  canvas {
+    display: block;
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .hud {
+    position: fixed;
+    top: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45), 0 0 12px rgba(0, 0, 0, 0.2);
+    pointer-events: none;
+    user-select: none;
+  }
+  #label {
+    font-size: 18px;
+    font-style: italic;
+    letter-spacing: 0.08em;
+    transition: opacity 1.5s ease;
+  }
+  .track {
+    position: relative;
+    width: 160px;
+    height: 2px;
+    margin: 10px auto 0;
+    background: rgba(255, 255, 255, 0.35);
+    border-radius: 1px;
+  }
+  .track::before,
+  .track::after {
+    content: "";
+    position: absolute;
+    top: -2px;
+    width: 1px;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.5);
+  }
+  .track::before { left: 25%; box-shadow: 40px 0 0 rgba(255, 255, 255, 0.5); }
+  .track::after { left: 75%; }
+  #mark {
+    position: absolute;
+    top: -3px;
+    width: 8px;
+    height: 8px;
+    margin-left: -4px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="A tree slowly changing through spring, summer, autumn and winter" role="img"></canvas>
+<div class="hud" aria-live="polite">
+  <div id="label"></div>
+  <div class="track"><span id="mark"></span></div>
+</div>
+<script>
+(() => {
+  // Seconds per season. Override with ?s=10 to watch it go faster.
+  const SEASON_S = (() => {
+    const v = parseFloat(new URLSearchParams(location.search).get("s"));
+    return v > 0 ? v : 75;
+  })();
+  const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+  const labelEl = document.getElementById("label");
+  const markEl = document.getElementById("mark");
+
+  // ---------- helpers ----------
+  function mulberry32(a) {
+    return () => {
+      a |= 0; a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const rnd = mulberry32(20171221);
+  const smooth = (e0, e1, x) => {
+    const k = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+    return k * k * (3 - 2 * k);
+  };
+  const lerp = (a, b, k) => a + (b - a) * k;
+  const mixRGB = (a, b, k) => [lerp(a[0], b[0], k), lerp(a[1], b[1], k), lerp(a[2], b[2], k)];
+  const rgb = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+
+  // ---------- the tree (unit coordinates: trunk length = 1) ----------
+  const MAX_DEPTH = 7;
+  const AUTUMN_HUES = [6, 16, 26, 36, 44, 50];
+  const nodes = [], leaves = [], blossoms = [];
+
+  function grow(parent, depth, ang, len, width, parentAbs) {
+    const node = {
+      parent, depth, ang, len, width,
+      phase: rnd() * Math.PI * 2,
+      a: 0, x1: 0, y1: 0, x2: 0, y2: 0,
+    };
+    nodes.push(node);
+    const abs = parentAbs + ang;
+
+    if (depth >= 5) {
+      const n = depth === MAX_DEPTH ? 3 : 2;
+      for (let i = 0; i < n; i++) {
+        const b = rnd();
+        leaves.push({
+          node,
+          pos: 0.3 + rnd() * 0.7,
+          side: (rnd() < 0.5 ? -1 : 1) * (0.45 + rnd() * 0.75),
+          size: 0.05 + rnd() * 0.03,
+          jit: (rnd() - 0.5) * 10,
+          bud: 0.05 + rnd() * 0.4,
+          b,
+          fall: 2.3 + b * 0.75,
+          hue: AUTUMN_HUES[(rnd() * AUTUMN_HUES.length) | 0] + (rnd() - 0.5) * 6,
+          sat: 70 + rnd() * 20,
+          lit: 42 + rnd() * 14,
+          flutter: rnd() * Math.PI * 2,
+          fell: -1,
+        });
+      }
+    }
+    if (depth === MAX_DEPTH) {
+      if (rnd() < 0.6) {
+        blossoms.push({
+          node, a: rnd(), off: (rnd() - 0.5) * 1.4,
+          size: 0.034 + rnd() * 0.02, rot: rnd() * 6.28, fell: -1,
+        });
+      }
+      return;
+    }
+    const n = depth === 0 ? 3 : rnd() < 0.28 ? 3 : 2;
+    for (let i = 0; i < n; i++) {
+      let spread = n === 2
+        ? (i === 0 ? -1 : 1) * (0.28 + rnd() * 0.3)
+        : (i - 1) * (0.42 + rnd() * 0.2) + (rnd() - 0.5) * 0.15;
+      const childAbs = abs + spread;
+      if (Math.abs(childAbs) > 1.35) spread -= Math.sign(childAbs) * (Math.abs(childAbs) - 1.35) * 0.8;
+      const ratio = depth === 0 ? 0.62 + rnd() * 0.1 : 0.7 + rnd() * 0.12;
+      grow(node, depth + 1, spread, len * ratio, width * 0.68, abs);
+    }
+  }
+  grow(null, 0, (rnd() - 0.5) * 0.06, 1, 0.12, 0);
+
+  // Bounding box of the still tree, so it can be scaled to fit any screen.
+  const bbox = (() => {
+    let minX = 0, maxX = 0, maxY = 0;
+    for (const n of nodes) {
+      const p = n.parent;
+      n.a = (p ? p.a : 0) + n.ang;
+      n.x1 = p ? p.x2 : 0; n.y1 = p ? p.y2 : 0;
+      n.x2 = n.x1 + Math.sin(n.a) * n.len;
+      n.y2 = n.y1 + Math.cos(n.a) * n.len;
+      minX = Math.min(minX, n.x2); maxX = Math.max(maxX, n.x2); maxY = Math.max(maxY, n.y2);
+    }
+    const m = 0.12; // room for leaves
+    return { halfW: Math.max(-minX, maxX) + m, h: maxY + m };
+  })();
+
+  const BRANCH_COLORS = [];
+  for (let d = 0; d <= MAX_DEPTH; d++) {
+    BRANCH_COLORS.push(rgb(mixRGB([58, 40, 30], [96, 72, 56], d / MAX_DEPTH)));
+  }
+
+  // ---------- palettes, keyed at the middle of each season ----------
+  const SKY_TOP = [[118, 180, 226], [72, 148, 222], [104, 132, 172], [146, 162, 184]];
+  const SKY_BOT = [[222, 240, 236], [204, 232, 246], [242, 206, 162], [226, 231, 239]];
+  const GRASS = [[124, 178, 84], [84, 146, 58], [150, 138, 72], [118, 116, 94]];
+  const SNOW = [240, 244, 250];
+  const SUN = [0.55, 0.9, 0.5, 0.25];
+  const WIND = [1, 0.8, 1.6, 0.9];
+
+  function seasonal(keys, t) {
+    const u = (t - 0.5 + 4) % 4;
+    const i = Math.floor(u);
+    const k = smooth(0, 1, u - i);
+    const a = keys[i], b = keys[(i + 1) % 4];
+    return Array.isArray(a) ? mixRGB(a, b, k) : lerp(a, b, k);
+  }
+  const snowFall = (t) => smooth(2.9, 3.1, t) * (1 - smooth(3.72, 3.95, t));
+  const snowCover = (t) => {
+    const tt = t < 0.6 ? t + 4 : t;
+    return smooth(3.05, 3.4, tt) * (1 - smooth(3.88, 4.25, tt));
+  };
+
+  // ---------- layout ----------
+  let W = 0, H = 0, dpr = 1, S = 1, baseX = 0, groundY = 0;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    groundY = H * 0.84;
+    S = Math.min((groundY - Math.max(96, H * 0.14)) / bbox.h, (W * 0.47) / bbox.halfW);
+    baseX = W / 2;
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // ---------- state ----------
+  // Start at today's real point in the (northern) year; spring begins ~Mar 20.
+  const now = new Date();
+  const doy = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 864e5);
+  // ?t=0..4 starts at a specific point instead (0 spring, 1 summer, 2 autumn, 3 winter).
+  const tParam = parseFloat(new URLSearchParams(location.search).get("t"));
+  let t = tParam >= 0 && tParam < 4 ? tParam : (((doy - 79 + 365) % 365) / 365) * 4;
+  let year = 0;
+  let clock = 0;
+
+  const falling = [];   // leaves and petals, in the air or on the ground
+  const flakes = [];
+
+  for (const l of leaves) if (t >= l.fall) l.fell = year;
+  for (const b of blossoms) if (t >= 0.5 + b.a * 0.15) b.fell = year;
+  // If we start after leaf fall, scatter what already came down.
+  if (t > 2.3 && snowCover(t) < 0.9) {
+    for (const l of leaves) {
+      if (l.fell === year && rnd() < 0.35) {
+        falling.push(makeLeaf(baseX + (rnd() - 0.5) * bbox.halfW * S * 2.4, 0, l, true));
+      }
+    }
+  }
+
+  function makeLeaf(x, y, l, landed) {
+    const gy = groundY + 4 + rnd() * (H - groundY) * 0.55;
+    return {
+      kind: "leaf", x, y: landed ? gy : y, gy,
+      vx: (rnd() - 0.3) * 18, vy: 26 + rnd() * 22,
+      amp: 20 + rnd() * 30, f: 1 + rnd() * 1.5, ph: rnd() * 6.28,
+      rot: rnd() * 6.28, vr: (rnd() - 0.5) * 4,
+      size: l.size * S, color: `hsl(${l.hue},${l.sat}%,${l.lit - 4}%)`,
+      landed, age: 0,
+    };
+  }
+  function makePetal(x, y) {
+    return {
+      kind: "petal", x, y, gy: groundY + 4 + rnd() * (H - groundY) * 0.5,
+      vx: 8 + rnd() * 14, vy: 14 + rnd() * 14,
+      amp: 25 + rnd() * 25, f: 1.5 + rnd() * 2, ph: rnd() * 6.28,
+      rot: rnd() * 6.28, vr: (rnd() - 0.5) * 6,
+      size: 0.012 * S, color: "hsl(340,80%,90%)", landed: false, age: 0,
+    };
+  }
+
+  // ---------- frame ----------
+  let last = performance.now();
+  let lastLabel = "";
+
+  function frame(nowMs) {
+    const dt = Math.min(0.1, (nowMs - last) / 1000);
+    last = nowMs;
+    clock += dt;
+    t += dt / SEASON_S;
+    if (t >= 4) { t -= 4; year++; }
+
+    const cover = snowCover(t);
+    const wind = REDUCED ? 0 : seasonal(WIND, t);
+
+    // Sky
+    const top = seasonal(SKY_TOP, t), bot = seasonal(SKY_BOT, t);
+    const sky = ctx.createLinearGradient(0, 0, 0, groundY);
+    sky.addColorStop(0, rgb(top));
+    sky.addColorStop(1, rgb(bot));
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H);
+
+    // Sun glow
+    const sunA = seasonal(SUN, t);
+    const sx = W * 0.8, sy = H * 0.18, sr = Math.max(W, H) * 0.35;
+    const sun = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
+    sun.addColorStop(0, `rgba(255,248,220,${sunA})`);
+    sun.addColorStop(0.08, `rgba(255,244,210,${sunA * 0.7})`);
+    sun.addColorStop(1, "rgba(255,244,210,0)");
+    ctx.fillStyle = sun;
+    ctx.fillRect(0, 0, W, H);
+
+    // Ground
+    const grass = mixRGB(seasonal(GRASS, t), SNOW, cover);
+    const far = mixRGB(grass, bot, 0.45);
+    ctx.fillStyle = rgb(far);
+    ctx.beginPath();
+    ctx.moveTo(0, groundY - H * 0.035);
+    ctx.bezierCurveTo(W * 0.3, groundY - H * 0.08, W * 0.55, groundY - H * 0.01, W, groundY - H * 0.06);
+    ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = rgb(grass);
+    ctx.beginPath();
+    ctx.moveTo(0, groundY + H * 0.02);
+    ctx.quadraticCurveTo(W / 2, groundY - H * 0.035, W, groundY + H * 0.02);
+    ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+    ctx.fill();
+
+    // Soft shadow under the tree
+    ctx.fillStyle = "rgba(0,0,0,0.10)";
+    ctx.beginPath();
+    ctx.ellipse(baseX, groundY + 2, bbox.halfW * S * 0.55, H * 0.018, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Branch positions for this frame
+    const sway = Math.sin(clock * 0.55) * 0.6 + Math.sin(clock * 1.3 + 1) * 0.4;
+    for (const n of nodes) {
+      const p = n.parent;
+      const s = wind * n.depth * (0.006 * sway + 0.004 * Math.sin(clock * 1.9 + n.phase));
+      n.a = (p ? p.a : 0) + n.ang + s;
+      n.x1 = p ? p.x2 : baseX; n.y1 = p ? p.y2 : groundY - n.width * S * 0.5;
+      n.x2 = n.x1 + Math.sin(n.a) * n.len * S;
+      n.y2 = n.y1 - Math.cos(n.a) * n.len * S;
+    }
+
+    // Trunk flare
+    const tw = nodes[0].width * S;
+    ctx.fillStyle = BRANCH_COLORS[0];
+    ctx.beginPath();
+    ctx.moveTo(baseX - tw * 1.3, groundY + 2);
+    ctx.quadraticCurveTo(baseX - tw * 0.5, groundY - tw * 0.3, baseX - tw * 0.5, groundY - tw * 2);
+    ctx.lineTo(baseX + tw * 0.5, groundY - tw * 2);
+    ctx.quadraticCurveTo(baseX + tw * 0.5, groundY - tw * 0.3, baseX + tw * 1.3, groundY + 2);
+    ctx.closePath();
+    ctx.fill();
+
+    // Branches
+    ctx.lineCap = "round";
+    for (const n of nodes) {
+      ctx.strokeStyle = BRANCH_COLORS[n.depth];
+      ctx.lineWidth = Math.max(0.7, n.width * S);
+      ctx.beginPath();
+      ctx.moveTo(n.x1, n.y1);
+      ctx.lineTo(n.x2, n.y2);
+      ctx.stroke();
+    }
+
+    // Snow resting on branches
+    if (cover > 0.01) {
+      ctx.strokeStyle = rgb(SNOW);
+      for (const n of nodes) {
+        if (n.depth > 6) continue;
+        const flat = Math.abs(Math.sin(n.a));
+        const lw = Math.max(0.7, n.width * S);
+        ctx.globalAlpha = cover * (0.05 + 0.95 * flat * flat);
+        ctx.lineWidth = Math.max(0.8, lw * 0.55);
+        ctx.beginPath();
+        ctx.moveTo(n.x1, n.y1 - lw * 0.4);
+        ctx.lineTo(n.x2, n.y2 - lw * 0.4);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Blossoms (early spring)
+    for (const b of blossoms) {
+      const n = b.node;
+      const fadeAt = 0.5 + b.a * 0.15;
+      if (t >= fadeAt && t < 2 && b.fell !== year) {
+        b.fell = year;
+        if (rnd() < 0.7) falling.push(makePetal(n.x2, n.y2));
+      }
+      const bloom = smooth(0.02 + b.a * 0.1, 0.16 + b.a * 0.1, t) * (1 - smooth(fadeAt - 0.08, fadeAt, t));
+      if (bloom < 0.02) continue;
+      const r = b.size * S * bloom;
+      const bx = n.x2 + Math.cos(n.a) * b.off * r;
+      const by = n.y2 + Math.sin(n.a) * b.off * r;
+      ctx.fillStyle = "hsl(338,78%,90%)";
+      ctx.beginPath();
+      for (let i = 0; i < 5; i++) {
+        const pa = b.rot + (i * Math.PI * 2) / 5;
+        ctx.moveTo(bx + Math.cos(pa) * r * 0.55 + r * 0.5, by + Math.sin(pa) * r * 0.55);
+        ctx.arc(bx + Math.cos(pa) * r * 0.55, by + Math.sin(pa) * r * 0.55, r * 0.5, 0, Math.PI * 2);
+      }
+      ctx.fill();
+      ctx.fillStyle = "hsl(340,65%,68%)";
+      ctx.beginPath();
+      ctx.arc(bx, by, r * 0.22, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Leaves
+    for (const l of leaves) {
+      if (t >= l.fall) {
+        if (l.fell !== year) {
+          l.fell = year;
+          const n = l.node;
+          falling.push(makeLeaf(lerp(n.x1, n.x2, l.pos), lerp(n.y1, n.y2, l.pos), l, false));
+        }
+        continue;
+      }
+      const g = smooth(l.bud, l.bud + 0.3, t);
+      if (g < 0.02) continue;
+      const green = smooth(0.25, 1.2, t);
+      const turn = smooth(1.95 + l.b * 0.2, l.fall - 0.03, t);
+      const h = lerp(lerp(92, 112, green), l.hue, turn);
+      const s = lerp(lerp(62, 46, green), l.sat, turn);
+      const li = lerp(lerp(58, 32, green), l.lit, turn) + l.jit * (1 - turn * 0.5);
+
+      const n = l.node;
+      const px = lerp(n.x1, n.x2, l.pos), py = lerp(n.y1, n.y2, l.pos);
+      const a = n.a + l.side + wind * (0.08 + turn * 0.12) * Math.sin(clock * 2.4 + l.flutter);
+      const len = l.size * S * g;
+      const dx = Math.sin(a), dy = -Math.cos(a);
+      ctx.fillStyle = `hsl(${h},${s}%,${li}%)`;
+      ctx.beginPath();
+      ctx.ellipse(px + dx * len, py + dy * len, len, len * 0.48, a - Math.PI / 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Falling leaves / petals
+    for (let i = falling.length - 1; i >= 0; i--) {
+      const p = falling[i];
+      p.age += dt;
+      if (!p.landed) {
+        const flow = wind * 12;
+        p.x += (p.vx + flow + Math.sin(p.age * p.f + p.ph) * p.amp) * dt;
+        p.y += p.vy * dt;
+        p.rot += p.vr * dt;
+        if (p.y >= p.gy) { p.y = p.gy; p.landed = true; p.age = 0; }
+      }
+      let alpha = 1;
+      if (p.kind === "leaf") {
+        alpha = 1 - cover;
+        if (p.landed && cover > 0.97) { falling.splice(i, 1); continue; }
+      } else if (p.landed) {
+        alpha = 1 - p.age / 8;
+        if (alpha <= 0) { falling.splice(i, 1); continue; }
+      }
+      if (p.x < -40 || p.x > W + 40) { falling.splice(i, 1); continue; }
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      const squash = p.landed ? 0.45 : 0.3 + 0.25 * Math.abs(Math.sin(p.age * 3 + p.ph));
+      ctx.ellipse(p.x, p.y, p.size, p.size * squash, p.rot, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    if (falling.length > 900) falling.splice(0, falling.length - 900);
+
+    // Snow
+    const fall = snowFall(t);
+    if (fall > 0 && !REDUCED) {
+      // On the very first frame fill the whole sky, so a winter load isn't empty.
+      const prefill = clock === dt;
+      const spawn = prefill ? fall * W * 0.4 : fall * dt * W * 0.12;
+      for (let k = 0; k < spawn || (k === 0 && rnd() < spawn); k++) {
+        flakes.push({
+          x: rnd() * (W + 100) - 50, y: prefill ? rnd() * groundY : -5,
+          r: 0.8 + rnd() * 2.2, vy: 22 + rnd() * 30, ph: rnd() * 6.28,
+          gy: groundY - H * 0.02 + rnd() * (H - groundY),
+        });
+      }
+    }
+    if (flakes.length) {
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.beginPath();
+      for (let i = flakes.length - 1; i >= 0; i--) {
+        const f = flakes[i];
+        f.y += f.vy * (0.6 + f.r * 0.25) * dt;
+        f.x += (Math.sin(clock * 0.8 + f.ph) * 12 + wind * 8) * dt;
+        if (f.y > f.gy) { flakes.splice(i, 1); continue; }
+        ctx.moveTo(f.x + f.r, f.y);
+        ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    }
+
+    // Label
+    const names = ["spring", "summer", "autumn", "winter"];
+    const si = Math.floor(t), frac = t - si;
+    const label = (frac < 0.33 ? "early " : frac < 0.67 ? "mid-" : "late ") + names[si];
+    if (label !== lastLabel) {
+      lastLabel = label;
+      labelEl.style.opacity = 0;
+      setTimeout(() => { labelEl.textContent = label; labelEl.style.opacity = 1; }, lastLabel && labelEl.textContent ? 700 : 0);
+    }
+    markEl.style.left = (t / 4) * 100 + "%";
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
